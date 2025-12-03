@@ -414,6 +414,329 @@ final manager = await WebRTCManager.create(
 
 ```dart
 
+## Server Integration Guide
+
+### Signaling Flow Overview
+
+The WebRTC API handles peer-to-peer connections. Your server's role is to **relay signaling messages** (offers, answers, ICE candidates) between clients. Here's the flow:
+
+```
+Client A ─────→ Server ─────→ Client B
+  (offer)       (relay)       (receives)
+         ←─────────────────
+         (answer back)
+```
+
+### Implementing SignalingInterface on Flutter Side
+
+Your Flutter app needs a `SignalingInterface` implementation to communicate with your server:
+
+```dart
+class MyServerSignaling implements SignalingInterface {
+  final String serverUrl; // e.g., "wss://your-server.com"
+  late WebSocket _webSocket;
+  late StreamController<WebRtcSignal> _signalController;
+  String? _roomId;
+
+  MyServerSignaling({required this.serverUrl});
+
+  @override
+  Future<void> initialize(String roomId) async {
+    _roomId = roomId;
+    _signalController = StreamController<WebRtcSignal>.broadcast();
+    
+    // Connect to your server
+    _webSocket = await WebSocket.connect('$serverUrl/webrtc');
+    
+    // Join room
+    _webSocket.add(jsonEncode({
+      'action': 'join',
+      'roomId': roomId,
+      'sessionId': 'unique-client-id', // Same as localSessionId
+    }));
+
+    // Listen for incoming signals
+    _webSocket.listen(
+      (message) {
+        final data = jsonDecode(message);
+        final signal = WebRtcSignal.fromJson(data);
+        _signalController.add(signal);
+      },
+      onError: (error) => _signalController.addError(error),
+      onDone: () => _signalController.close(),
+    );
+  }
+
+  @override
+  Future<void> sendSignal(WebRtcSignal signal) async {
+    _webSocket.add(jsonEncode(signal.toJson()));
+  }
+
+  @override
+  Stream<WebRtcSignal> getSignalStream() {
+    return _signalController.stream;
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _webSocket.close();
+    await _signalController.close();
+  }
+}
+
+// Usage
+final manager = await WebRTCManager.create(
+  signaling: MyServerSignaling(serverUrl: 'wss://my-server.com'),
+  localSessionId: 'user-${DateTime.now().millisecondsSinceEpoch}',
+  roomId: 'room-123',
+);
+```
+
+### Server-Side Implementation (Node.js / Express + WebSocket)
+
+Here's a minimal server implementation in **Node.js** to handle signaling:
+
+```javascript
+const express = require('express');
+const expressWs = require('express-ws');
+const app = express();
+expressWs(app);
+
+// Store active rooms and their clients
+const rooms = new Map();
+
+app.ws('/webrtc', (ws, req) => {
+  let clientSessionId = null;
+  let roomId = null;
+
+  ws.on('message', (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      
+      // Handle join room
+      if (data.action === 'join') {
+        roomId = data.roomId;
+        clientSessionId = data.sessionId;
+
+        // Create room if doesn't exist
+        if (!rooms.has(roomId)) {
+          rooms.set(roomId, new Map());
+        }
+
+        // Add client to room
+        const room = rooms.get(roomId);
+        room.set(clientSessionId, ws);
+
+        // Send current participants to new client
+        const participants = Array.from(room.keys()).filter(id => id !== clientSessionId);
+        ws.send(JSON.stringify({
+          action: 'peers',
+          peers: participants,
+        }));
+
+        // Notify others about new participant
+        room.forEach((otherWs, otherId) => {
+          if (otherId !== clientSessionId) {
+            otherWs.send(JSON.stringify({
+              type: 'peer_joined',
+              peerId: clientSessionId,
+            }));
+          }
+        });
+
+        console.log(`Client ${clientSessionId} joined room ${roomId}`);
+        return;
+      }
+
+      // Handle signaling messages (offer, answer, ICE candidates)
+      if (data.type && ['webrtc_offer', 'webrtc_answer', 'webrtc_ice_candidate'].includes(data.type)) {
+        const room = rooms.get(roomId);
+        if (!room) return;
+
+        // Extract target peer from payload
+        const payload = JSON.parse(data.payload);
+        const targetPeerId = payload.targetPeerId;
+
+        if (targetPeerId && room.has(targetPeerId)) {
+          const targetWs = room.get(targetPeerId);
+          // Forward signal to target peer
+          targetWs.send(JSON.stringify(data));
+          console.log(`Forwarded ${data.type} from ${clientSessionId} to ${targetPeerId}`);
+        }
+        return;
+      }
+
+      // Handle peer disconnection
+      if (data.type === 'leave_room') {
+        handleClientDisconnect();
+        return;
+      }
+    } catch (err) {
+      console.error('Error processing message:', err);
+    }
+  });
+
+  ws.on('close', () => {
+    handleClientDisconnect();
+  });
+
+  function handleClientDisconnect() {
+    if (roomId && clientSessionId) {
+      const room = rooms.get(roomId);
+      if (room) {
+        room.delete(clientSessionId);
+        
+        // Notify others about disconnection
+        room.forEach((otherWs) => {
+          otherWs.send(JSON.stringify({
+            type: 'peer_left',
+            peerId: clientSessionId,
+          }));
+        });
+
+        // Clean up empty rooms
+        if (room.size === 0) {
+          rooms.delete(roomId);
+        }
+      }
+      console.log(`Client ${clientSessionId} left room ${roomId}`);
+    }
+  }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.listen(3000, () => {
+  console.log('WebRTC signaling server running on port 3000');
+});
+```
+
+### Server-Side Implementation (Serverpod - Dart)
+
+If you prefer Dart/Serverpod backend:
+
+```dart
+// server/lib/src/endpoints/webrtc.dart
+import 'package:serverpod/serverpod.dart';
+import 'dart:convert';
+
+// Store active rooms
+final Map<String, Map<String, WebsocketSession>> _rooms = {};
+
+Future<void> handleWebRTCStream(
+  Session session,
+  String message,
+) async {
+  try {
+    final data = jsonDecode(message);
+    
+    // Handle join room
+    if (data['action'] == 'join') {
+      final roomId = data['roomId'] as String;
+      final sessionId = data['sessionId'] as String;
+
+      _rooms.putIfAbsent(roomId, () => {});
+      _rooms[roomId]![sessionId] = session.websocket;
+
+      // Send current participants
+      final participants = _rooms[roomId]!.keys
+          .where((id) => id != sessionId)
+          .toList();
+      
+      session.websocket.send(jsonEncode({
+        'action': 'peers',
+        'peers': participants,
+      }));
+
+      // Notify others
+      for (final otherId in _rooms[roomId]!.keys) {
+        if (otherId != sessionId) {
+          _rooms[roomId]![otherId].send(jsonEncode({
+            'type': 'peer_joined',
+            'peerId': sessionId,
+          }));
+        }
+      }
+
+      return;
+    }
+
+    // Handle signaling (offer, answer, ICE)
+    if (['webrtc_offer', 'webrtc_answer', 'webrtc_ice_candidate']
+        .contains(data['type'])) {
+      final roomId = _getRoomForSession(session);
+      if (roomId == null) return;
+
+      final payload = jsonDecode(data['payload'] as String);
+      final targetPeerId = payload['targetPeerId'];
+
+      if (targetPeerId != null && _rooms[roomId]?.containsKey(targetPeerId) ?? false) {
+        _rooms[roomId]![targetPeerId].send(message);
+      }
+      return;
+    }
+  } catch (e) {
+    print('Error in WebRTC handler: $e');
+  }
+}
+
+String? _getRoomForSession(Session session) {
+  for (final (roomId, peers) in _rooms.entries) {
+    if (peers.containsValue(session.websocket)) {
+      return roomId;
+    }
+  }
+  return null;
+}
+```
+
+### Key Signaling Protocol
+
+Your server should handle these message types:
+
+| Type | From | To | Purpose |
+|------|------|----|----|
+| `join` | Client | Server | Join a room (includes roomId, sessionId) |
+| `webrtc_offer` | Client A | Server → Client B | SDP offer to establish connection |
+| `webrtc_answer` | Client B | Server → Client A | SDP answer to accept connection |
+| `webrtc_ice_candidate` | Any Client | Server → Target Peer | ICE candidate for NAT traversal |
+| `leave_room` | Client | Server | Client is leaving (notify others) |
+| `peer_joined` | Server | All Clients | New peer joined (server notifies) |
+| `peer_left` | Server | All Clients | Peer disconnected (server notifies) |
+
+### Server Responsibilities
+
+✅ **Must do:**
+- Store active clients per room
+- Forward WebRTC signals (offer/answer/ICE) between clients
+- Notify all clients when someone joins/leaves
+- Close connections cleanly
+
+❌ **Should NOT do:**
+- Process or modify WebRTC payloads
+- Handle audio/video directly (that's peer-to-peer)
+- Store call history (do it separately)
+
+### Testing Your Signaling
+
+Use `curl` or Postman to test WebSocket:
+
+```bash
+# Using wscat (npm install -g wscat)
+wscat -c ws://localhost:3000/webrtc
+
+# Send join message
+{"action":"join","roomId":"test-room","sessionId":"user-1"}
+
+# Simulate offer
+{"type":"webrtc_offer","payload":"{\"sdp\":\"...\",\"type\":\"offer\",\"targetPeerId\":\"user-2\"}","senderSessionId":"user-1"}
+```
+
+---
+
 ## Mesh vs SFU Topology
 
 This library implements **Mesh Topology**:
