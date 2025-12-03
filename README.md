@@ -34,23 +34,55 @@ dependencies:
 
 ## Quick Start
 
-### Simplified Quick Start
+### Zero-Config (5 Lines!)
 
-If you prefer minimal boilerplate, use the provided `SimpleWebRTC` helper:
+Get started immediately with sensible defaults:
 
 ```dart
 import 'package:webrtc_flutter_api/webrtc_flutter_api.dart';
 
-final signalingImpl = MySignalingImplementation();
-final controller = await SimpleWebRTC.createController(
-  signaling: signalingImpl,
-  localSessionId: 'unique-session-id',
-  roomId: 'room-123',
+final manager = await WebRTCManager.create(
+  signaling: MySignalingImplementation(),
+  localSessionId: 'user-123',
+  roomId: 'room-456',
 );
 
-// Use `controller` as a ChangeNotifier in your UI
+// Use manager.controller in your UI (ChangeNotifier)
+// Use manager.connectedPeers, manager.getRemoteRenderer(peerId), etc.
 ```
 
+That's it! Everything is ready—no extra configuration needed.
+
+---
+
+### Custom Configuration
+
+Want to customize ICE servers, video quality, or media constraints?
+
+```dart
+final config = WebRTCConfig.audioAndVideo(
+  videoWidth: 1280,
+  videoHeight: 720,
+  videoFrameRate: 30,
+);
+
+final manager = await WebRTCManager.create(
+  signaling: MySignalingImplementation(),
+  localSessionId: 'user-123',
+  roomId: 'room-456',
+  config: config,
+);
+```
+
+**Pre-built Configs:**
+- `WebRTCConfig.defaultConfig()` — Audio only (public STUN servers)
+- `WebRTCConfig.audioOnly()` — Audio with echo/noise cancellation
+- `WebRTCConfig.audioAndVideo()` — Configurable video + audio
+- `WebRTCConfig.withTurnServer()` — Custom STUN/TURN servers
+
+---
+
+## Deep Dive: Custom Implementation
 
 ### 1. Implement SignalingInterface
 
@@ -87,7 +119,57 @@ class MySignalingImplementation implements SignalingInterface {
 }
 ```
 
-### 2. Create WebRTCController
+### 2. Use WebRTCManager (Recommended)
+
+```dart
+import 'package:provider/provider.dart';
+import 'package:webrtc_flutter_api/webrtc_flutter_api.dart';
+
+@override
+void initState() {
+  super.initState();
+  _initializeWebRTC();
+}
+
+Future<void> _initializeWebRTC() async {
+  final manager = await WebRTCManager.create(
+    signaling: MySignalingImplementation(),
+    localSessionId: 'user-123',
+    roomId: 'room-456',
+  );
+  
+  // Now use manager.controller with Provider
+  if (mounted) {
+    context.read<WebRTCManager>().controller; // or access manager directly
+  }
+}
+```
+
+Or use with Provider from the start:
+
+```dart
+void main() {
+  runApp(
+    MultiProvider(
+      providers: [
+        FutureProvider(
+          create: (_) => WebRTCManager.create(
+            signaling: MySignalingImplementation(),
+            localSessionId: 'user-123',
+            roomId: 'room-456',
+          ),
+          initialData: null,
+        ),
+      ],
+      child: const MyApp(),
+    ),
+  );
+}
+```
+
+### 3. Old Way: Direct Controller (Still Supported!)
+
+If you prefer raw control, use `WebRTCController` directly:
 
 ```dart
 import 'package:provider/provider.dart';
@@ -108,25 +190,9 @@ void main() {
 }
 ```
 
-### 3. Initialize and Join Room
+### 3. Use in UI (Any Approach)
 
-```dart
-@override
-void initState() {
-  super.initState();
-  _initializeWebRTC();
-}
-
-Future<void> _initializeWebRTC() async {
-  final controller = context.read<WebRTCController>();
-  await controller.initialize('room-123');
-  
-  // Create offers for existing peers
-  await controller.createOffersForPeers(['peer-1', 'peer-2']);
-}
-```
-
-### 4. Use in UI
+All approaches use the same UI code with `ChangeNotifier`:
 
 ```dart
 Consumer<WebRTCController>(
@@ -169,6 +235,8 @@ Consumer<WebRTCController>(
 )
 ```
 
+---
+
 ## Architecture
 
 ### Models
@@ -185,51 +253,55 @@ Consumer<WebRTCController>(
   - Provides UI integration via Provider pattern
   - Handles media stream setup and cleanup
 
+- **`WebRTCManager`** - Convenience wrapper with sensible defaults
+  - One-line initialization: `WebRTCManager.create(...)`
+  - Built-in config presets
+  - Simplified API for common operations
+
+- **`WebRTCConfig`** - Configuration builder with factory methods
+  - `defaultConfig()` — Production defaults
+  - `audioOnly()` — Audio + noise cancellation
+  - `audioAndVideo()` — Customizable video quality
+  - `withTurnServer()` — Custom STUN/TURN setup
+
 ### Signaling
 
 - **`SignalingInterface`** - Abstract interface for implementing custom signaling backends
 
 ## Advanced Usage
 
-### Custom ICE Configuration
+### Custom Config Example
 
 ```dart
-final controller = WebRTCController(
-  signalingInterface: signalingImpl,
-  localSessionId: sessionId,
-  iceConfiguration: {
-    'iceServers': [
-      {'urls': 'stun:stun.l.google.com:19302'},
-      {'urls': 'stun:stun1.l.google.com:19302'},
-      {
-        'urls': 'turn:turn.example.com',
-        'username': 'user',
-        'credential': 'pass',
-      },
-    ],
+final config = WebRTCConfig.withTurnServer(
+  stunUrls: [
+    'stun:stun.l.google.com:19302',
+    'stun:stun1.l.google.com:19302',
+  ],
+  turnUrl: 'turn:turn.example.com',
+  turnUsername: 'user',
+  turnCredential: 'pass',
+  mediaConstraints: {
+    'audio': {'echoCancellation': true},
+    'video': {
+      'width': {'ideal': 1920},
+      'height': {'ideal': 1080},
+      'frameRate': {'ideal': 60},
+    },
   },
+);
+
+final manager = await WebRTCManager.create(
+  signaling: MySignalingImplementation(),
+  localSessionId: 'user-123',
+  roomId: 'room-456',
+  config: config,
 );
 ```
 
-### Listening to State Changes
+### Direct Controller Usage
 
 ```dart
-final controller = context.read<WebRTCController>();
-controller.addListener(() {
-  print('Call state: ${controller.callState}');
-  print('Connected peers: ${controller.connectedPeers}');
-});
-```
-
-### Handle Peer Disconnections
-
-```dart
-// In your signaling implementation, when you detect a peer left
-controller.cleanUpPeer('peer-id');
-
-// Or when leaving room
-await controller.leaveRoom();
-```
 
 ## Mesh vs SFU Topology
 

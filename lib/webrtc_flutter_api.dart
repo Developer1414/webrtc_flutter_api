@@ -8,5 +8,10 @@ export 'src/webrtc_controller.dart';
 
 // Signaling interface
 export 'src/signaling/signaling_interface.dart';
-// Convenience API
+
+// Configuration & presets
+export 'src/config.dart';
+
+// Convenience APIs
 export 'src/api.dart';
+export 'src/manager.dart';
