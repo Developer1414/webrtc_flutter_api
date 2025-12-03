@@ -1,0 +1,21 @@
+name: webrtc_flutter_api
+description: A comprehensive Dart/Flutter WebRTC API package for multi-peer audio/video communication. Mesh topology support with customizable signaling backend.
+version: 1.0.0
+publish_to: github
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_webrtc: ^1.2.1
+  provider: ^6.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  # No assets or plugins needed
