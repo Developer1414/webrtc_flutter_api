@@ -34,6 +34,24 @@ dependencies:
 
 ## Quick Start
 
+### Simplified Quick Start
+
+If you prefer minimal boilerplate, use the provided `SimpleWebRTC` helper:
+
+```dart
+import 'package:webrtc_flutter_api/webrtc_flutter_api.dart';
+
+final signalingImpl = MySignalingImplementation();
+final controller = await SimpleWebRTC.createController(
+  signaling: signalingImpl,
+  localSessionId: 'unique-session-id',
+  roomId: 'room-123',
+);
+
+// Use `controller` as a ChangeNotifier in your UI
+```
+
+
 ### 1. Implement SignalingInterface
 
 First, implement the `SignalingInterface` for your backend:

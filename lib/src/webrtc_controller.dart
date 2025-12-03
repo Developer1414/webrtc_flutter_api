@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'models/call_connection_state.dart';
 import 'models/peer_connection_data.dart';
@@ -404,8 +404,10 @@ class WebRTCController extends ChangeNotifier {
   }
 
   @override
-  Future<void> dispose() async {
-    await cleanUpAll();
+  void dispose() {
+    // `cleanUpAll` is asynchronous; call it without awaiting because
+    // `ChangeNotifier.dispose` must be synchronous.
+    cleanUpAll();
     super.dispose();
   }
 }
