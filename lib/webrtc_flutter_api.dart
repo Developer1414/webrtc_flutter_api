@@ -15,3 +15,6 @@ export 'src/config.dart';
 // Convenience APIs
 export 'src/api.dart';
 export 'src/manager.dart';
+export 'src/events.dart';
+export 'src/controls.dart';
+export 'src/widgets.dart';

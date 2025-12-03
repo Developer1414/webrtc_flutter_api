@@ -5,6 +5,8 @@ import 'dart:async';
 import 'webrtc_controller.dart';
 import 'signaling/signaling_interface.dart';
 import 'config.dart';
+import 'events.dart';
+import 'controls.dart';
 
 /// Simplified WebRTC manager with sensible defaults.
 ///
@@ -39,11 +41,20 @@ class WebRTCManager {
   /// Room ID this manager is connected to
   final String roomId;
 
+  /// Easy event listening
+  late final WebRTCEvents events;
+
+  /// Easy control methods
+  late final WebRTCControls controls;
+
   WebRTCManager({
     required this.controller,
     required this.config,
     required this.roomId,
-  });
+  }) {
+    events = WebRTCEvents(controller);
+    controls = WebRTCControls(controller);
+  }
 
   /// Creates and initializes a WebRTC manager in one call.
   ///
@@ -101,6 +112,7 @@ class WebRTCManager {
 
   /// Leave room and clean up all resources
   Future<void> dispose() async {
+    events.dispose();
     await controller.leaveRoom();
   }
 }

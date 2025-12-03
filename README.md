@@ -190,48 +190,139 @@ void main() {
 }
 ```
 
-### 3. Use in UI (Any Approach)
+### 3. Easy Events, Controls & UI (One-Liners)
 
-All approaches use the same UI code with `ChangeNotifier`:
+Everything is ready with built-in convenience methods and pre-made widgets:
 
 ```dart
-Consumer<WebRTCController>(
-  builder: (context, controller, _) {
-    return Column(
-      children: [
-        // Display connected peers
-        Wrap(
-          children: controller.connectedPeers.map((peerId) {
-            final renderer = controller.getRemoteRenderer(peerId);
-            return renderer != null
-                ? SizedBox(
-                    width: 120,
-                    height: 120,
-                    child: RTCVideoView(renderer),
-                  )
-                : Container(
-                    width: 120,
-                    height: 120,
-                    color: Colors.grey,
-                    child: Icon(Icons.person),
-                  );
-          }).toList(),
-        ),
-        
-        // Mute button
-        FloatingActionButton(
-          onPressed: () => controller.toggleMute(!controller.isLocalMuted),
-          child: Icon(controller.isLocalMuted ? Icons.mic_off : Icons.mic),
-        ),
-        
-        // Volume slider
-        Slider(
-          value: controller.remoteVolume,
-          onChanged: (v) => controller.setRemoteVolume(v),
-        ),
-      ],
+// 🎧 Event Listening (no boilerplate)
+manager.events.onPeersChanged.listen((peers) {
+  print('Peers changed: $peers');
+});
+
+manager.events.onConnectionStateChanged.listen((state) {
+  print('Connection: $state');
+});
+
+manager.events.onMuteStateChanged.listen((isMuted) {
+  print('Muted: $isMuted');
+});
+
+// 🎙️ Easy Controls
+manager.controls.toggleMicrophone();
+manager.controls.muteMicrophone();
+manager.controls.unmuteMicrophone();
+await manager.controls.setRemoteVolume(0.5);
+await manager.controls.increaseVolume();
+await manager.controls.decreaseVolume();
+
+// 👥 Peer Management
+manager.controls.mutePeer('peer-id');
+manager.controls.unmutePeer('peer-id');
+await manager.controls.disconnectPeer('peer-id');
+
+// 📱 Ready-to-use UI Widgets (ONE LINE!)
+WebRTCPeerGridView(controller: manager.controller)
+
+WebRTCConnectionStatus(controller: manager.controller)
+
+WebRTCControlPanel(
+  controller: manager.controller,
+  onLeavePressed: () => Navigator.pop(context),
+  showVolumeSlider: true,
+)
+```
+
+---
+
+### 4. Complete Example: No Boilerplate
+
+```dart
+@override
+Widget build(BuildContext context) {
+  return Scaffold(
+    appBar: AppBar(title: const Text('Voice Call')),
+    body: ChangeNotifierProvider<WebRTCController>.value(
+      value: manager.controller,
+      child: Column(
+        children: [
+          // Status bar (1 line)
+          WebRTCConnectionStatus(controller: manager.controller),
+          
+          // Peers grid (1 line)
+          Expanded(
+            child: WebRTCPeerGridView(controller: manager.controller),
+          ),
+          
+          // Controls (1 line)
+          WebRTCControlPanel(
+            controller: manager.controller,
+            onLeavePressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+```
+
+That's it! No custom widgets, no boilerplate, everything works!
+
+---
+
+### 5. Customization: Override Defaults
+
+```dart
+// Custom peer card layout
+WebRTCPeerGridView(
+  controller: manager.controller,
+  crossAxisCount: 3,
+  peerBuilder: (context, peerId, renderer) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.blue, width: 3),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Stack(
+        children: [
+          renderer != null
+              ? RTCVideoView(renderer)
+              : const Center(child: Icon(Icons.person)),
+          Positioned(
+            bottom: 8,
+            left: 8,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 4,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(peerId, style: const TextStyle(color: Colors.white)),
+            ),
+          ),
+        ],
+      ),
     );
   },
+)
+
+// Custom status colors
+WebRTCConnectionStatus(
+  controller: manager.controller,
+  connectedColor: Colors.blue,
+  connectingColor: Colors.purple,
+  failedColor: Colors.orange,
+)
+
+// Custom control panel
+WebRTCControlPanel(
+  controller: manager.controller,
+  muteColor: Colors.purple,
+  leaveColor: Colors.redAccent,
+  showVolumeSlider: false,
 )
 ```
 
@@ -257,6 +348,26 @@ Consumer<WebRTCController>(
   - One-line initialization: `WebRTCManager.create(...)`
   - Built-in config presets
   - Simplified API for common operations
+
+### Events & Controls
+
+- **`WebRTCEvents`** - Easy event streams
+  - `onPeersChanged` — Listen to peer list changes
+  - `onConnectionStateChanged` — Listen to connection state
+  - `onMuteStateChanged` — Listen to mute state changes
+
+- **`WebRTCControls`** - Simple operation control
+  - Microphone: `toggleMicrophone()`, `muteMicrophone()`, `unmuteMicrophone()`
+  - Volume: `setRemoteVolume()`, `increaseVolume()`, `decreaseVolume()`
+  - Peers: `mutePeer()`, `unmutePeer()`, `disconnectPeer()`
+  - Room: `leaveRoom()`
+
+### Widgets
+
+- **`WebRTCPeerGridView`** - Ready-to-use peer grid (customize with `peerBuilder`)
+- **`WebRTCConnectionStatus`** - Status indicator with customizable colors
+- **`WebRTCControlPanel`** - Mute button, volume slider, leave button
+- **`WebRTCEmptyPeersPlaceholder`** - Placeholder when no peers connected
 
 - **`WebRTCConfig`** - Configuration builder with factory methods
   - `defaultConfig()` — Production defaults
