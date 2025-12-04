@@ -194,6 +194,13 @@
       ]
     },
     {
+      "name": "logger",
+      "version": "2.6.2",
+      "dependencies": [
+        "meta"
+      ]
+    },
+    {
       "name": "dart_webrtc",
       "version": "1.6.0",
       "dependencies": [
@@ -369,13 +376,6 @@
       "dependencies": [
         "meta",
         "path"
-      ]
-    },
-    {
-      "name": "logger",
-      "version": "2.6.2",
-      "dependencies": [
-        "meta"
       ]
     }
   ],
