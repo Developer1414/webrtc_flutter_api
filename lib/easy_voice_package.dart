@@ -1,5 +1,12 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+
+// ====================================================================
+// !!! ВНИМАНИЕ: ЭТОТ КОД ПРЕДСТАВЛЯЕТ СОБОЙ ВНУТРЕННЮЮ, СКРЫТУЮ ЛОГИКУ !!!
+// !!! РЕАЛЬНОГО SDK. РАЗРАБОТЧИК НЕ КОПИРУЕТ ЭТОТ ФАЙЛ, А ИСПОЛЬЗУЕТ !!!
+// !!! ТОЛЬКО ЕГО ПУБЛИЧНЫЕ ИНТЕРФЕЙСЫ (VoiceClient и VoiceSignalingTransport).
+// ====================================================================
 
 // ==========================================
 // ЧАСТЬ 1: СЕРВЕРНАЯ ЛОГИКА (Для Serverpod)
@@ -18,7 +25,7 @@ class VoiceServerEngine {
 
     switch (type) {
       case 'create':
-        return _createRoom(payload['roomId'], payload['config']);
+        return _createRoom(payload['roomId'], payload['config'], userId);
       case 'join':
         return _joinRoom(payload['roomId'], userId, payload['password']);
       case 'leave':
@@ -36,10 +43,17 @@ class VoiceServerEngine {
     }
   }
 
-  Map<String, dynamic> _createRoom(String roomId, Map<String, dynamic> config) {
+  Map<String, dynamic> _createRoom(
+      String roomId, Map<String, dynamic> config, String userId) {
     if (_rooms.containsKey(roomId)) throw Exception('Room exists');
     _rooms[roomId] = _Room(roomId, config);
-    return {'status': 'created', 'roomId': roomId};
+    // Добавляем создателя комнаты
+    _rooms[roomId]!.peers.add(userId);
+    return {
+      'status': 'created',
+      'roomId': roomId,
+      'peers': [userId]
+    };
   }
 
   Map<String, dynamic> _joinRoom(
@@ -51,7 +65,9 @@ class VoiceServerEngine {
 
     // Возвращаем список тех, кто уже в комнате (чтобы мы им позвонили)
     final existingPeers = room.peers.toList();
-    room.peers.add(userId);
+    if (!room.peers.contains(userId)) {
+      room.peers.add(userId);
+    }
     return {'status': 'joined', 'peers': existingPeers};
   }
 
@@ -100,6 +116,7 @@ class VoiceClient {
 
   // Состояние
   MediaStream? _localStream;
+  String? _currentRoomId;
   final Map<String, RTCPeerConnection> _connections = {};
   final Map<String, MediaStream> _remoteStreams =
       {}; // Храним стримы для управления громкостью
@@ -127,37 +144,52 @@ class VoiceClient {
   /// 2. Создать комнату
   Future<void> createRoom(String roomId,
       {String? password, int maxPeers = 10}) async {
-    await transport.sendRequest('create', {
-      'roomId': roomId,
-      'config': {'password': password, 'max': maxPeers}
-    });
-    // После создания сразу входим
-    await joinRoom(roomId, password: password);
+    try {
+      await transport.sendRequest('create', {
+        'roomId': roomId,
+        'config': {'password': password, 'max': maxPeers}
+      });
+      _currentRoomId = roomId;
+      // После создания сразу входим
+      await joinRoom(roomId, password: password);
+    } catch (e) {
+      _errorController.add("Ошибка создания комнаты: $e");
+    }
   }
 
   /// 3. Войти в комнату
   Future<void> joinRoom(String roomId, {String? password}) async {
-    final response = await transport
-        .sendRequest('join', {'roomId': roomId, 'password': password});
+    try {
+      final response = await transport
+          .sendRequest('join', {'roomId': roomId, 'password': password});
+      _currentRoomId = roomId;
 
-    // Сервер вернул список тех, кто уже там. Звоним им.
-    List<dynamic> peers = response['peers'];
-    for (var peerId in peers) {
-      await _connectToPeer(peerId as String, initiateOffer: true);
+      // Сервер вернул список тех, кто уже там. Звоним им.
+      List<dynamic> peers = response['peers'];
+      for (var peerId in peers) {
+        // Мы уже в комнате, подключаемся к существующим
+        await _connectToPeer(peerId as String, initiateOffer: true);
+      }
+      _updateParticipants();
+    } catch (e) {
+      _errorController.add("Ошибка присоединения к комнате: $e");
     }
-    _updateParticipants();
   }
 
   /// 4. Выйти
-  Future<void> leave(String roomId) async {
+  Future<void> leave() async {
+    if (_currentRoomId == null) return;
+
     _localStream?.getTracks().forEach((t) => t.stop());
     for (var pc in _connections.values) {
       await pc.close();
     }
     _connections.clear();
     _remoteStreams.clear();
+
+    await transport.sendRequest('leave', {'roomId': _currentRoomId});
+    _currentRoomId = null;
     _updateParticipants();
-    await transport.sendRequest('leave', {'roomId': roomId});
   }
 
   /// 5. Управление своим микрофоном
@@ -171,6 +203,7 @@ class VoiceClient {
   void muteParticipant(String peerId, bool isMuted) {
     final stream = _remoteStreams[peerId];
     if (stream != null && stream.getAudioTracks().isNotEmpty) {
+      // isMuted = true -> enabled = false
       stream.getAudioTracks()[0].enabled = !isMuted;
     }
   }
@@ -178,8 +211,8 @@ class VoiceClient {
   /// 7. Регулировка громкости участника (0.0 - 1.0)
   /// Примечание: В чистом Flutter WebRTC поддержка setVolume зависит от платформы.
   void setParticipantVolume(String peerId, double volume) {
-    // Это placeholder. В нативном WebRTC volume обычно ставится на Render'е или через AudioTrack helper.
-    // Для простоты реализации здесь мы делаем Mute если volume == 0
+    // В реальном SDK здесь будет вызов нативного API для установки громкости.
+    // Для простоты реализации здесь мы используем mute при volume == 0
     muteParticipant(peerId, volume == 0);
   }
 
@@ -205,6 +238,17 @@ class VoiceClient {
     pc.onTrack = (event) {
       if (event.streams.isNotEmpty) {
         _remoteStreams[peerId] = event.streams[0];
+        // TODO: Здесь нужен механизм, который передаст MediaStream в UI для рендера (AudioElement)
+      }
+    };
+
+    // Обработка отключения пира
+    pc.onConnectionState = (state) {
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        _connections.remove(peerId);
+        _remoteStreams.remove(peerId);
+        _updateParticipants();
       }
     };
 
@@ -227,6 +271,8 @@ class VoiceClient {
       await pc.setLocalDescription(offer);
       _sendSignal(peerId, 'offer', offer.sdp!);
     }
+
+    _updateParticipants();
   }
 
   Future<void> _handleSignal(VoiceSignalData signal) async {
@@ -234,10 +280,10 @@ class VoiceClient {
     final payload = signal.data;
     final type = payload['type'];
 
+    // Если получили offer от пира, которого еще нет в _connections, то создаем его.
     if (pc == null && type == 'offer') {
       await _connectToPeer(signal.fromPeerId, initiateOffer: false);
       pc = _connections[signal.fromPeerId];
-      _updateParticipants();
     }
 
     if (pc == null) return;
@@ -266,6 +312,7 @@ class VoiceClient {
   }
 
   void _updateParticipants() {
+    // В список добавляем только тех, кто реально подключен (есть в _connections)
     _participantsController.add(_connections.keys.toList());
   }
 }
