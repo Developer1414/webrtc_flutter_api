@@ -1,18 +1,18 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
-/// Контроллер, отвечающий за управление рендерерами и удалёнными медиа-потоками.
+/// WebRTCController
 ///
-/// Реализован как singleton: WebRTCController.instance
-/// Предоставляет API для:
-/// - создания/инициализации RTCVideoRenderer для удалённого пира
-/// - присоединения MediaStream к рендереру
-/// - удаления и очистки рендереров
-/// - получения списка рендереров (для использования в WebRtcService)
+/// Контроллер, отвечающий за управление RTCVideoRenderer и привязанных
+/// к ним удалённых MediaStream'ов. Singleton: WebRTCController.instance.
 ///
-/// Примечание: этот контроллер не пытается заниматься сигнализацией или
-/// установкой peer connection — он фокусируется на рендерах и управлении
-/// MediaStream/рендерами, ��тобы WebRtcService и UI могли с ними работать.
+/// Задачи:
+/// - lifecycle / инициализация RTCVideoRenderer per-peer
+/// - attach/detach MediaStream -> renderer
+/// - хранение per-peer метаданных (volume)
+/// - события создания/удаления рендерера
+///
+/// Замечание: контроллер не выполняет сигнализацию и не управляет RTCPeerConnection.
 class WebRTCController {
   WebRTCController._();
   static final WebRTCController instance = WebRTCController._();
@@ -20,98 +20,98 @@ class WebRTCController {
   final Map<String, RTCVideoRenderer> _renderers = {};
   final Map<String, double> _volumes = {};
 
+  final List<void Function(String peerId, RTCVideoRenderer renderer)>
+      _onRendererCreated = [];
+  final List<void Function(String peerId)> _onRendererRemoved = [];
+
   bool _initialized = false;
 
-  /// Инициализация контроллера (может быть вызвана один раз при старте приложения)
+  /// Инициализация контроллера (безопасно вызывать несколько раз)
   Future<void> initialize() async {
     if (_initialized) return;
-    // На текущий момент специфичная инициализация не требуется,
-    // но оставляем метод для расширяемости и будущих нужд.
+    // Точка расширения для платформенных инициализаций.
     _initialized = true;
   }
 
   /// Создаёт и инициализирует RTCVideoRenderer для пира, если его ещё нет.
-  /// Возвращает инициализированный рендерер.
   Future<RTCVideoRenderer> createRendererForPeer(String peerId) async {
-    if (_renderers.containsKey(peerId)) {
-      return _renderers[peerId]!;
+    if (peerId.isEmpty) {
+      throw ArgumentError('peerId cannot be empty');
     }
+    final existing = _renderers[peerId];
+    if (existing != null) return existing;
 
     final renderer = RTCVideoRenderer();
     try {
       await renderer.initialize();
       _renderers[peerId] = renderer;
+      _notifyRendererCreated(peerId, renderer);
+      return renderer;
     } catch (e) {
-      // В случае ошибки очищаем созданный объект
+      // очистка частично созданного объекта
       try {
         await renderer.dispose();
       } catch (_) {}
       rethrow;
     }
-    return renderer;
   }
 
-  /// Получить уже существующий рендерер для пира или null если его нет.
-  ///
-  /// Этот синхронный метод полезен для использования в UI, где вы хотите
-  /// сразу взять рендерер если он уже создан (см. WebRtcService).
+  /// Возвращает уже существующий рендерер или null.
   RTCVideoRenderer? getRemoteRenderer(String peerId) {
     return _renderers[peerId];
   }
 
-  /// Асинхронный вариант получения рендерера: создаст рендерер если его нет.
+  /// Получить или создать рендерер.
   Future<RTCVideoRenderer> getOrCreateRemoteRenderer(String peerId) async {
     final existing = getRemoteRenderer(peerId);
     if (existing != null) return existing;
     return await createRendererForPeer(peerId);
   }
 
-  /// Присоединяет MediaStream к рендереру пира (если рендерер создан).
-  /// Если рендерера нет, метод попытается его создать.
-  Future<void> attachStreamToRenderer(String peerId, MediaStream stream) async {
+  /// Присоединяет MediaStream к рендереру (создаст рендерер если нужно).
+  Future<void> attachStreamToRenderer(
+      String peerId, MediaStream? stream) async {
+    if (peerId.isEmpty) throw ArgumentError('peerId cannot be empty');
     final renderer = await getOrCreateRemoteRenderer(peerId);
     try {
       renderer.srcObject = stream;
     } catch (e) {
-      // Если присоединение не удалось, просто логируем (не кидаем)
       if (kDebugMode) {
         print('WebRTCController: failed to attach stream to $peerId: $e');
       }
     }
   }
 
-  /// Отсоединяет поток и удаляет рендерер для пира.
+  /// Удаляет рендерер и освобождает ресурсы.
   Future<void> removeRendererForPeer(String peerId) async {
     final renderer = _renderers.remove(peerId);
-    if (renderer != null) {
-      try {
-        renderer.srcObject = null;
-      } catch (_) {}
-      try {
-        await renderer.dispose();
-      } catch (_) {}
-    }
+    if (renderer == null) return;
+    try {
+      renderer.srcObject = null;
+    } catch (_) {}
+    try {
+      await renderer.dispose();
+    } catch (_) {}
     _volumes.remove(peerId);
+    _notifyRendererRemoved(peerId);
   }
 
-  /// Возвращает Map всех рендереров (неизменяемую копию).
+  /// Возвращает неизменяемую копию всех рендереров.
   Map<String, RTCVideoRenderer> getAllRemoteRenderers() {
     return Map.unmodifiable(_renderers);
   }
 
-  /// Устанавливает желаемую громкость для конкретного пира (0.0 - 1.0).
-  ///
-  /// Примечание: flutter_webrtc не предоставляет прямого API для установки
-  /// громкости в RTCVideoRenderer. Здесь мы сохраняем значение в памяти
-  /// и даём возможность UI/плееру считать его и применить (например, к
-  /// HTML audio элементу в web или к нативным аудио-API на платформе).
+  /// Сохраняет желаемый уровень громкости для пира (0.0 - 1.0).
+  /// Замечание: flutter_webrtc не предоставляет API для установки громкости
+  /// per-renderer на всех платформах. Это значение нужно применить платформенно.
   void setRemoteVolume(String peerId, double volume) {
+    if (peerId.isEmpty) throw ArgumentError('peerId cannot be empty');
     final v = volume.clamp(0.0, 1.0);
     _volumes[peerId] = v;
   }
 
-  /// Получить сохранённую громкость для пира или null.
-  double? getRemoteVolumeForPeer(String peerId) => _volumes[peerId];
+  /// Получить сохранённую громкость (по умолчанию 1.0).
+  double getRemoteVolumeForPeer(String peerId) => _volumes[peerId] ?? 1.0;
 
   /// Очистить все рендереры и ресурсы.
   Future<void> disposeAll() async {
@@ -124,6 +124,43 @@ class WebRTCController {
     _initialized = false;
   }
 
-  /// Для отладки: возвращает количество созданных рендереров
+  // ---------------- Event API ----------------
+  void onRendererCreated(void Function(String peerId, RTCVideoRenderer) cb) {
+    _onRendererCreated.add(cb);
+  }
+
+  void offRendererCreated(void Function(String peerId, RTCVideoRenderer) cb) {
+    _onRendererCreated.remove(cb);
+  }
+
+  void onRendererRemoved(void Function(String peerId) cb) {
+    _onRendererRemoved.add(cb);
+  }
+
+  void offRendererRemoved(void Function(String peerId) cb) {
+    _onRendererRemoved.remove(cb);
+  }
+
+  void _notifyRendererCreated(String peerId, RTCVideoRenderer r) {
+    for (final cb in List.from(_onRendererCreated)) {
+      try {
+        cb(peerId, r);
+      } catch (e) {
+        if (kDebugMode) print('onRendererCreated callback error: $e');
+      }
+    }
+  }
+
+  void _notifyRendererRemoved(String peerId) {
+    for (final cb in List.from(_onRendererRemoved)) {
+      try {
+        cb(peerId);
+      } catch (e) {
+        if (kDebugMode) print('onRendererRemoved callback error: $e');
+      }
+    }
+  }
+
+  /// Количество созданных рендереров (для отладки)
   int get rendererCount => _renderers.length;
 }
